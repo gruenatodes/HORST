@@ -230,6 +230,7 @@ def give_predictions(y, X, X_predict, decode, rows):
     for i in range(len(y_predict)):
         dic = {}
         dic['home_id'] = rows[i]['home_id']
+        dic['teams'] = (rows[i]['hometeam'], rows[i]['guestteam'])
         dic['pred_array'] = y_predict[i]
         dic['pred'] = decode[list(y_predict[i]).index(max(y_predict[i]))]
         print rows[i]['hometeam'], rows[i]['guestteam'], dic['pred']
@@ -298,7 +299,59 @@ def regress_and_predict(season, day):
         X_predict.append(regs)
     X_predict = np.array(X_predict)
     tips = give_predictions(y, X, X_predict, decode, rows)
+    return tips, decode
+
+def maximize_expected_points(tips, decode):
+    point_dist = [5,3,2]
+    lis = sorted(decode.keys())
+
+    print "Nach Beruecksichtigung der erwarteten Punkte:"
+    for j in range(len(tips)):
+        game = tips[j]
+        probs = {}
+        for i in range(len(lis)):
+            probs[lis[i]] = round(game['pred_array'][i],4)
+        exp_pts = {}
+        for outcome in sorted(decode.keys()):
+            # find results that bring highest points (equality)
+            exp_pts[outcome] = point_dist[0] * probs[outcome]
+            # finc results that bring 2nd highest points (same goal diff)
+            prob = 0
+            for other in sorted(decode.keys()):
+                if (decode[other][0] - decode[other][1] ==
+                    decode[outcome][0] - decode[outcome][1] and
+                    other != outcome):
+                    prob += probs[other]
+            exp_pts[outcome] += point_dist[1] * prob
+            # find results that bring 3rd highest points (same tendency)
+            prob = 0
+            outc_tend = 0
+            if decode[outcome][0] > decode[outcome][1]:
+                outc_tend = 1
+            elif decode[outcome][0] < decode[outcome][1]:
+                outc_tend = 2
+            for other in sorted(decode.keys()):
+                other_tend = 0
+                if decode[outcome][0] > decode[outcome][1]:
+                    other_tend = 1
+                elif decode[outcome][0] < decode[outcome][1]:
+                    other_tend = 2
+                if (decode[other][0] - decode[other][1] !=
+                    decode[outcome][0] - decode[outcome][1] and
+                    other != outcome and
+                    outc_tend == other_tend):
+                    prob += probs[other]
+            exp_pts[outcome] += point_dist[2] * prob
+            exp_pts[outcome] = round(exp_pts[outcome], 3)
+
+        best_guess = max(exp_pts, key=exp_pts.get)
+
+        tips[j]['pred'] = decode[best_guess]
+        tips[j]['exp_pts'] = exp_pts[best_guess]
+        
+        print game['teams'][0], game['teams'][1], decode[best_guess], exp_pts[best_guess]
     return tips
+            
 
 def submit_guess_for_day(season, day, tips):
     url = "http://openligadb-json.heroku.com/api/\

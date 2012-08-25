@@ -8,8 +8,9 @@ horst.update_matchtimes_for_day(this_season, next_day)
 
 horst.update_regressors_for_day(this_season, next_day)
 
-tips = horst.regress_and_predict(this_season, next_day)
-print tips
+tips, decode = horst.regress_and_predict(this_season, next_day)
+
+tips = horst.maximize_expected_points(tips, decode)
 
 horst.submit_guess_for_day(this_season, next_day, tips)
 
@@ -25,8 +26,8 @@ horst.submit_guess_for_day(this_season, next_day, tips)
 ##- estimate probabilities for next day''s games being careful to model new/onew
 ##    properly
 ##
-##(- use payoff function and estimated probabilities to guess according to
-##    maximized expected payoff) <- can be added later
+##- use payoff function and estimated probabilities to guess according to
+##    maximized expected payoff
 ##
 ##- submit guess to API
 ##
