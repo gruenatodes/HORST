@@ -7,6 +7,8 @@ from collections import defaultdict
 import statsmodels.api as sm
 import numpy as np
 import postguess
+import pyper as pr
+import math
 
 db_name = 'data/example.db'
 avg_days = [1, 5, 17, 34]
@@ -24,7 +26,7 @@ c = conn.cursor()
 def find_prev_and_next_day():
     c.execute('''SELECT season, day, date FROM bundesliga
                 WHERE datetime(date)>datetime('now', '+2hours')
-                ORDER BY date DESC LIMIT 1''')
+                ORDER BY date ASC LIMIT 1''')
     row = c.fetchone()
     next_day = row['day']
     season = row['season']
@@ -118,6 +120,8 @@ def get_avg_goals(tname, season, day, length=1, sc='scored'):
         su = sum([game[0] for game in goallist]) / (len(goallist) + 0.0)
     except ZeroDivisionError:
         su = None
+    except TypeError:
+        su = None
     
     return su
     
@@ -185,7 +189,7 @@ def get_data(this_season, next_day):
 
     return data
 
-def encode_results(results):
+def encode_results(results, method='results'):
     unique_results = list(set(results))
     histo = defaultdict(int)
     for x in results:
@@ -194,28 +198,37 @@ def encode_results(results):
 ##        print x, histo[x]
 
     outcome_codes = {} # this maps results into integer codes
-    for result in unique_results:
-        if result[0] == result[1]: # tie: (0,0): 0, (1,1): 1, (2,2) or higher: 2
-            if result[0] <= 1:
-                outcome_codes[result] = result[0] # 0,1 - 0:0, 1:1
-            else:
-                outcome_codes[result] = 2 # 2 - 2:2+
-        elif result[0] > result[1]: # win: sort by (goal diff, goals scored)
-            if result[0] == result[1] + 1:
-                outcome_codes[result] = 2 + min(result[0], 2) # 3,4 - 1:0, 2:1+
-            elif result[0] == result[1] + 2:
-                outcome_codes[result] = 3 + min(result[0], 3) # 5,6 - 2:0, 3:1+
-            elif result[0] == result[1] + 3: 
-                outcome_codes[result] = 7 # 7 - 3:0+
-            else: # result[0] >= result[1] + 4
-                outcome_codes[result] = 12 # 13 - 4:0+
-        else: # loss
-            if result[0] == result[1] - 1:
-                outcome_codes[result] = 7 + min(result[1], 2) # 8,9 - 0:1, 1:2+
-            elif result[0] == result[1] - 2:
-                outcome_codes[result] = 10 # 10 - 0:2+
-            else: # result[0] >= result[1] - 3
-                outcome_codes[result] = 11 # 11 - 0:3+
+    if method == 'results':
+        for result in unique_results:
+            if result[0] == result[1]: # tie: (0,0): 0, (1,1): 1, (2,2) or higher: 2
+                if result[0] <= 1:
+                    outcome_codes[result] = result[0] # 0,1 - 0:0, 1:1
+                else:
+                    outcome_codes[result] = 2 # 2 - 2:2+
+            elif result[0] > result[1]: # win: sort by (goal diff, goals scored)
+                if result[0] == result[1] + 1:
+                    outcome_codes[result] = 2 + min(result[0], 2) # 3,4 - 1:0, 2:1+
+                elif result[0] == result[1] + 2:
+                    outcome_codes[result] = 3 + min(result[0], 3) # 5,6 - 2:0, 3:1+
+                elif result[0] == result[1] + 3: 
+                    outcome_codes[result] = 7 # 7 - 3:0+
+                else: # result[0] >= result[1] + 4
+                    outcome_codes[result] = 12 # 13 - 4:0+
+            else: # loss
+                if result[0] == result[1] - 1:
+                    outcome_codes[result] = 7 + min(result[1], 2) # 8,9 - 0:1, 1:2+
+                elif result[0] == result[1] - 2:
+                    outcome_codes[result] = 10 # 10 - 0:2+
+                else: # result[0] >= result[1] - 3
+                    outcome_codes[result] = 11 # 11 - 0:3+
+    elif method == 'toto':
+        for result in unique_results:
+            if result[0] == result[1]: #tie
+                outcome_codes[result] = 0
+            elif result[0] > result[1]: #win
+                outcome_codes[result] = 1
+            elif result[0] < result[1]: #loss
+                outcome_codes[result] = 2
 
     outcomes = map(lambda x: outcome_codes[x], results)
     return outcomes, outcome_codes
@@ -237,10 +250,11 @@ def give_predictions(y, X, X_predict, decode, rows):
         tips.append(dic)
     return tips
 
-def regress_and_predict(season, day):
+# this function does logistic regression and prediction in python
+def regress_and_predict(season, day, method='results'):
     data = get_data(season, day)
-    outcomes, code_dict = encode_results(
-                [(game['scorehome'],game['scoreguest']) for game in data])
+    results = [(game['scorehome'],game['scoreguest']) for game in data]
+    outcomes, code_dict = encode_results(results, method)
 
     decode = {}
     for k, v in code_dict.iteritems():
@@ -301,6 +315,184 @@ def regress_and_predict(season, day):
     tips = give_predictions(y, X, X_predict, decode, rows)
     return tips, decode
 
+# do regression in R:
+def reg_and_pred_R(season,day,method='results'):
+    data = get_data(season, day)
+    results = [(game['scorehome'],game['scoreguest']) for game in data]
+    outcomes, code_dict = encode_results(results, method)
+
+    decode = {}
+    for k, v in code_dict.iteritems():
+        decode[v] = decode.get(v, [])
+        decode[v].append(k)
+    if None in decode: del decode[None]
+    for k in decode:
+        decode[k] = max(decode[k], key=lambda x: -x[0]-x[1])
+        
+    histo = defaultdict(int)
+    for x in outcomes:
+        histo[x] += 1
+    print "Ein bisschen Geschichte:"
+    for x in sorted(histo, key=histo.get, reverse=True):
+        print x, decode[x], histo[x]
+
+    # Construct regressors
+    X = [] # list of lists
+    y = [] # just a vector
+    i = 0
+    for game in data:
+        regs = [1] # a constant
+        for team, new in [['home', 'new'], ['guest', 'onew']]:
+            for avg_len in avg_days:
+                for sc in ['scored', 'conceded']:
+                    reg_name = team + sc + str(avg_len)
+                    regs.append((1-game[new]) * game[reg_name])
+        regs.append(game['new'])
+        regs.append(game['onew'])
+        X.append(regs)
+        y.append(outcomes[i])
+        i += 1
+    X = np.array(X)
+    y = np.array(y)
+    # predictors:
+    query = ('''SELECT * FROM bundesliga
+                WHERE season=%s AND day=%s
+                ORDER BY date ASC, hometeam ASC'''
+             % (season, day) )
+    c.execute(query)
+    rows = c.fetchall()
+    X_predict = []
+    for game in rows:
+        regs = [1] # a constant
+        for team, new in [['home', 'new'], ['guest', 'onew']]:
+            for avg_len in avg_days:
+                for sc in ['scored', 'conceded']:
+                    reg_name = team + sc + str(avg_len)
+                    if game[reg_name] != None:
+                        reg = game[reg_name]
+                    else:
+                        reg = -1
+                    regs.append((1-game[new]) * reg)
+        regs.append(game['new'])
+        regs.append(game['onew'])
+        X_predict.append(regs)
+    X_predict = np.array(X_predict)
+
+    # talk to R and do regression
+    r = pr.R(use_numpy=True)
+    r["buli"] = X
+    r("buli <- as.data.frame(buli)")
+    r["data_y"] = y
+    r("buli$res <- data_y")
+    r["data_X_pred"] = X_predict
+    r["helperlevels <- 0:%s" % 12]
+    r['helperlabels <- c("0:0", "1:1", "2:2", \
+                         "1:0", "2:1+", "2:0", "3:1+", "3:0+", \
+                         "0:1", "1:2+", "0:2", "1:3+", "0:3+")']
+    r["buli$res <- factor(buli$res, helperlevels, helperlabels)"]
+    r["rm(helperlevels, helperlabels)"]
+    r['mlognests <- list(tie = c("0:0", "1:1", "2:2+"), \
+                  win = c("1:0", "2:1", "3:2+", "2:0", "3:1+", "3:0+"), \
+                  loss= c("0:1", "1:2+", "0:2", "1:3+", "0:3+") )']
+
+    r("library(mlogit)")
+    r('bulireg <- mlogit.data(buli, shape="wide", choice="res")')
+
+    r('mlog.res <- mlogit(formula = result ~ 0 | \
+  homescored34 + homeconceded34 + guestscored34 + guestconceded34 + \
+  homescored17 + homeconceded17 + guestscored17 + guestconceded17 + \
+  homescored5 + homeconceded5 + guestscored5 + guestconceded5 + \
+  homescored1 + homeconceded1 + guestscored1 + guestconceded1, \
+                   data=buli.reg, reflevel="0:0", nests=mlog.nests)')
+    
+
+    return X, y, X_predict, r
+
+def poisson_reg(season, day):
+    data = get_data(season, day)
+    results = [(game['scorehome'],game['scoreguest']) for game in data]
+    outcomes, code_dict = encode_results(results)
+    
+    decode = {}
+    for k, v in code_dict.iteritems():
+        decode[v] = decode.get(v, [])
+        decode[v].append(k)
+    if None in decode: del decode[None]
+    for k in decode:
+        decode[k] = max(decode[k], key=lambda x: -x[0]-x[1])
+        
+    # Construct regressors:
+    X = [] # list of lists (N x P matrix)
+    y = [] # also list of lists: N x 2 matrix. 2 outcomes per game (gamma_scorehome and gamma_scoreguest)
+    i = 0
+    for game in data:
+        regs = [1]
+        for team, new in [['home', 'new'], ['guest', 'onew']]:
+            for avg_len in avg_days:
+                for sc in ['scored', 'conceded']:
+                    reg_name = team + sc + str(avg_len)
+                    regs.append((1-game[new]) * game[reg_name])
+        regs.append(game['new'])
+        regs.append(game['onew'])
+        X.append(regs)
+        y.append([ results[i][0], results[i][1] ])
+        i += 1
+    X = np.array(X)
+    y = np.array(y)
+    # predictors:
+    query = ('''SELECT * FROM bundesliga
+                WHERE season=%s AND day=%s
+                ORDER BY date ASC, hometeam ASC'''
+             % (season, day) )
+    c.execute(query)
+    rows = c.fetchall()
+    X_predict = []
+    for game in rows:
+        regs = [1] # a constant
+        for team, new in [['home', 'new'], ['guest', 'onew']]:
+            for avg_len in avg_days:
+                for sc in ['scored', 'conceded']:
+                    reg_name = team + sc + str(avg_len)
+                    if game[reg_name] != None:
+                        reg = game[reg_name]
+                    else:
+                        reg = -1
+                    regs.append((1-game[new]) * reg)
+        regs.append(game['new'])
+        regs.append(game['onew'])
+        X_predict.append(regs)
+    X_predict = np.array(X_predict)
+    tips = poisson_predictions(y, X, X_predict, decode, rows)
+    return tips, decode
+
+def poisson_predictions(y, X, X_predict, decode, rows):
+    y_home = y[:,0]
+    y_guest = y[:,1]
+    mod_home = sm.Poisson(y_home, X)
+    mod_guest = sm.Poisson(y_guest, X)
+    est_home = mod_home.fit()
+    est_guest = mod_guest.fit()
+    lambdas_home = est_home.predict(X_predict) # these are expected values - parameter lambda of the Poisson distribution
+    lambdas_guest = est_guest.predict(X_predict)
+    tips = []
+    for i in range(len(lambdas_home)):
+        dic = {}
+        dic['home_id'] = rows[i]['home_id']
+        dic['teams'] = (rows[i]['hometeam'], rows[i]['guestteam'])
+        pred_array = []
+        for code, res in decode.iteritems():
+            pred_array.append(poisson_llh(res, lambdas_home[i], lambdas_guest[i]))
+        pred_array = [(j+0.0) / sum(pred_array) for j in pred_array] # normalize to 1
+        dic['pred_array'] = np.round(pred_array,4)
+        dic['pred'] = decode[pred_array.index(max(pred_array))]
+        print rows[i]['hometeam'], rows[i]['guestteam'], dic['pred'], lambdas_home[i], lambdas_guest[i]
+        tips.append(dic)
+    return tips
+    
+def poisson_llh(result, lambda_h, lambda_g):
+    pmf = lambda x,lambd: lambd ** (x+0.0) / (math.factorial(x) * math.exp(lambd+0.0))
+    return pmf(result[0], lambda_h) * pmf(result[1], lambda_g)
+        
 def maximize_expected_points(tips, decode):
     point_dist = [5,3,2]
     lis = sorted(decode.keys())
@@ -353,7 +545,7 @@ def maximize_expected_points(tips, decode):
     return tips
             
 
-def submit_guess_for_day(season, day, tips):
+def submit_guess_for_day(season, day, tips, dest='botliga'):
     url = "http://openligadb-json.heroku.com/api/\
 matchdata_by_group_league_saison?\
 league_saison=%s&league_shortcut=bl1&group_order_id=%s" % (season-1, day)
@@ -361,15 +553,41 @@ league_saison=%s&league_shortcut=bl1&group_order_id=%s" % (season-1, day)
     daydata = json.loads(daydata)['matchdata']
 
     submission = {}
-    for game in daydata:
-        match_id = int(game['match_id'])
-        home_id = int(game['id_team1'])
-        for game_dic in tips:
-            if game_dic['home_id'] == home_id:
-                result_string = (str(game_dic['pred'][0]) + ":" +
-                                 str(game_dic['pred'][1]))
-                submission[match_id] = result_string
-                break
+    if dest == 'botliga':
+        for game in daydata:
+            match_id = int(game['match_id'])
+            home_id = int(game['id_team1'])
+            for game_dic in tips:
+                if game_dic['home_id'] == home_id:
+                    result_string = (str(game_dic['pred'][0]) + ":" +
+                                     str(game_dic['pred'][1]))
+                    submission[match_id] = result_string
+                    break
 
-    print 'Uebertrage Tipps an Botliga...'
-    print postguess.botliga_post(submission)
+        print 'Uebertrage Tipps an botliga...'
+        print postguess.botliga_post(submission)
+    elif dest == 'botligaPoisson':
+        for game in daydata:
+            match_id = int(game['match_id'])
+            home_id = int(game['id_team1'])
+            for game_dic in tips:
+                if game_dic['home_id'] == home_id:
+                    result_string = (str(game_dic['pred'][0]) + ":" +
+                                     str(game_dic['pred'][1]))
+                    submission[match_id] = result_string
+                    break
+
+        print 'Uebertrage Tipps an botliga...'
+        print postguess.botliga_poisson_post(submission)
+    elif dest == 'prozent':
+        for game in daydata:
+            match_id = int(game['match_id'])
+            home_id = int(game['id_team1'])
+            for game_dic in tips:
+                if game_dic['home_id'] == home_id:
+                    prob_triple = tuple(map(lambda x: round(x, 4),
+                                            game_dic['pred_array']))
+                    submission[match_id] = [prob_triple, season, day]
+                    break
+        print 'Uebertrage Tipps an die Prozentrunde...'
+        print postguess.prozent_post(submission)
